@@ -1,0 +1,1085 @@
+---
+title: 'Project Paper: Soccer Player Valuation Prediction'
+author: "Firass Elhouat, Lex Brunett, Marco Palmisano"
+date: "2024-11-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse) # data wrangling
+library(readxl) # for reading excel data 
+library(stringi) # for string data wrangling
+library(MASS) # for stats functions (stepAIC)
+library(caret) # for cross validation 
+library(car) # for diagnostics 
+library(glmnet) # for lasso and ridge 
+library(tree) # for tree regression
+library(randomForest) # for random forest 
+library(gbm) # for gbm models 
+library(mgcv) # for gams 
+library(h2o) # for neural net 
+library(lubridate) # date data wrangling
+library(plotly) # for interactive plots 
+library(e1071) # for SVM's  
+library(earth) # for MARS model
+library(vip) #For variable importance plot
+# loading player stats data
+football_stats <- read.csv("~/Desktop/2022-2023 Football Player Stats.csv", sep = ";", stringsAsFactors = FALSE)
+
+# loading player stats data 
+players <- read_csv("~/Documents/Loyola /Fall Semster/Introduction to Predictive Analytics/Project - Football Data /players.csv")
+
+
+# Clean Ensure player_code matches player names in football_stats
+football_stats$Player <- iconv(football_stats$Player, from = "latin1", to = "UTF-8")
+football_stats$Squad <- iconv(football_stats$Squad, from = "latin1", to = "UTF-8")
+
+# merging data 
+Football_DATA <- merge(players, football_stats, by.x = "name", by.y = "Player", all.x = TRUE)
+
+```
+
+## Introduction
+
+In our exploratory data analysis (EDA) section, we conducted an in-dept exploration of the football dataset, which includes various variables related to player evaluation and the clubs to which these players are affiliated with. Furthermore, we focused on key features such as age, foot preference, height, player position, and nationality, as these are expected to contribute significantly to estimating the response variable (market_value_in_eur).
+
+However, to fully capture the complexity of player valuation, it was crucial to incorporate additional variables that are aimed at providing deeper insights into player performance. In particular, we identified the need for position - specific performance metrics that better reflect the contributions of players in different roles, such as goalkeepers, midfielders, and defenders.
+
+While the dataset we initially introduced in our EDA section did contain variables that captured such metrics such as goals, assists, and yellow/red cards, these metrics are more relevant for attacking players. For other positions, such as defense and midfield, these variables alone may not adequately represent a player's value. Therefore, expanding the dataset to include detailed performances metrics, such as blocks, interceptions, clearances, passing accuracy, and other position specific actions, will be essential for capturing the full range of actors that influence a player's market value.
+
+## Data Cleaning and Feature Engineering
+
+During the data cleaning process, we identified and removed specific columns that were not essential for this study. For instance, we decided to drop duplicate columns that were found on both data sets after merging, player names, highly correlated variables such as highest_market_value_in_eur which can be almost similar to our response variable.
+
+Furthermore, dropping high cardinality categorical variables such as country_of_citizenship, city_of_birth, and last_name. This was a crucial step in simplifying the dataset, by minimizing redundancy, and reducing the risk for having more variables than observations, which could negatively impact the robustness and interpretability of our model.
+
+Although the players dataset contains 32,405 observations and 23 columns, this would further be reduced to 2,135 observations and 240 columns. This is because the players data sets contains player information of several leagues from various nations. However, in this study we decided to focus players on the top five leagues in the world which are Premier League, Ligue 1, Bundesliga, Serie A and La Liga.
+
+The original players dataset consisted of 32,405 observations and 23 columns, however, after filtering and feature engineering, the dataset was reduced to 2,135 observations and 240 columns. This reduction was all done in due to our decision to focus exclusively on players from the top five leagues in the world: the Premier League, Ligue 1, Bundesliga, Serie A, and La Liga. By narrowing our scope to these specific leagues, we ensured that the study concentrated on the most competitive and influential football leagues, enhancing the relevance and consistency of the analysis, and reducing the computational expense in processing a complex dataset.
+
+```{r}
+# Define the columns to drop that are not important for our analysis 
+columns_to_drop <- c("name", "first_name", "last_name", "last_season", "current_club_id", 
+                     "player_code", "city_of_birth", "image_url", "url", 
+                     "current_club_name", "country_of_birth", "date_of_birth", 
+                     "current_club_domestic_competition_id","player_id", 
+                     "sub_position", "highest_market_value_in_eur",'Pos',"Nation"
+                     ,"country_of_citizenship")
+
+# Ensure that only the columns that exist in merged_data are selected
+columns_to_drop <- columns_to_drop[columns_to_drop %in% names(Football_DATA)]
+
+
+# Drop the columns from the dataset set 
+Football_DATA <- Football_DATA[, !names(Football_DATA) %in% columns_to_drop]
+
+
+```
+
+## Feature Engineering
+
+As part of our analysis, feature engineering plays a critical role in preparing the dataset for analysis and modeling. This streamlines the process in deriving meaningful insights and optimizing the dataset for better performance. This process involved filling in missing values, creating new variables, and refining existing columns to enhance the relevance and utility of the data. For instance, creating dummy variables which can be easy handled by our models in the next stage, such as neural networks, which is often difficult to train with a categorical variables.
+
+1.  "foot" variable: Handled NA values by defining them as "Unspecified", to ensure no data was left undefined.\
+2.  "height_in_cm" variable: The median value was used to fill in the missing values.
+3.  "agent_name" variable: Initially, we considered dropping this column due to its high cardinality, with 2,834 unique agent names. Instead, we opted to transform this, by labeling players without an agent with a placeholder "No Agent". Next, a binary variable, "has_agent" was create to indicate whether a player had an agent, this preserved the valuable information without over complicating the model, as we could say that a player with an agent may be able to have an impact on their market value.
+
+The next part consisted of creating a new variable called League_Tier, this categorized 98 of the teams into the league finish, during 2022-2023 football season. This variable aims in capturing the competitive level and performance of the teams in their respective leagues.
+
+For instance, during a football season, in the la liga league, "Barcelona", "Real Madrid", "Atlético Madrid", and "Real Sociedad" qualified for the highest league competition. Similarly, we extended this categorization to account for teams that finished other tiers, such as: Europa League, Conference League, Not Qualified, and Relegation. In terms of Not Qualified and Relegation, these are often teams that did not secure qualification any of the European competition or notable stage, while Relegation, is the result of teams being demoted to a lower division.
+
+This multi-tiered categorization provides an added layer of information, particularly for evaluating the impact of team success or failure on player market valuation, as often, teams who had qualified or relegated to a lower competitive division, may impact a player value on the market.
+
+The next step involved applying a log transformation to the response variable "market_value_in_eur". This transformation was aimed to to reduce the skewness of the variable, ensuring a more normal-like distribution and improving the performance of the models. By transforming this variable, we can better capture the relative differences in player market values across the dataset.
+
+Before creating dummy variables, we want to consider a player's contract expiration data, in this case we decided to extract just the year in which the contract is expected to expire and how this may impact their market value. The final stage of the feature engineering involved generating dummy variables for every categorical variable retained or created. This approach is beneficial in modeling, especially in machine learning algorithms such as Neural Networks.
+
+```{r}
+# fill NA's in "foot" column 
+Football_DATA <- Football_DATA %>%
+  mutate(foot = ifelse(is.na(foot), "Unspecified", foot))
+
+# fill NA's in "height_in_cm" column
+Football_DATA$height_in_cm[is.na(Football_DATA$height_in_cm)] <- median(Football_DATA$height_in_cm, na.rm = TRUE)
+
+# print the length of unique agent_name
+length(unique(players$agent_name))
+length(unique(football_stats$Squad))
+
+# Replace NA values with a placeholder "No Agent"
+Football_DATA$agent_name[is.na(Football_DATA$agent_name)] <- "No Agent"
+
+# Create binary column to indicate presence of an agent
+Football_DATA$has_agent <- ifelse(Football_DATA$agent_name == "No Agent" | Football_DATA$agent_name == "", 0, 1)
+
+# Drop the original agent_name column
+Football_DATA$agent_name <- NULL
+
+# Defining clubs that were in the Champions league qualification stage 
+champions_league <- c("Barcelona", "Real Madrid", "Atlético Madrid", "Real Sociedad", 
+                      "Manchester City", "Arsenal", "Manchester United", 
+                      "Newcastle Utd", "Paris S-G", "Lens", "Bayern Munich", 
+                      "Dortmund", "RB Leipzig", "Union Berlin","Napoli", "Lazio", 
+                      "Inter", "Milan")
+
+# Defining clubs that were in the Europa league qualification stage 
+europa_league <- c("Villarreal","Real Betis", "Liverpool", "Brighton", "Marseille", 
+                   "Freiburg", "Leverkusen","Atalanta", "Roma")
+
+# Defining clubs that were in the Conference league qualification stage 
+conference_league <- c("Osasuna", "Aston Villa", "Rennes", 
+                       "Eint Frankfurt", "Juventus")
+
+# Defining clubs that were in the Relegation stage in their league 
+relegation <- c("Espanyol", "Valladolid", "Elche", "Leicester City", 
+                "Leeds United", "Southampton", "Auxerre", "Ajaccio", 
+                "Troyes", "Angers", "Stuttgart", "Schalke 04", 
+                "Hertha","Spezia", "Cremonese", "Sampdoria")
+
+# Assign the League_Tier using str_detect 
+Football_DATA$League_Tier <- case_when(
+  str_detect(Football_DATA$Squad, paste(champions_league, collapse = "|")) ~ "Champions League",
+  str_detect(Football_DATA$Squad, paste(europa_league, collapse = "|")) ~ "Europa League",
+  str_detect(Football_DATA$Squad, paste(conference_league, collapse = "|")) ~ "Conference League",
+  str_detect(Football_DATA$Squad, paste(relegation, collapse = "|")) ~ "Relegation",
+  TRUE ~ "Not Qualified")
+
+# Transform 'market_value_in_eur' to log scale
+Football_DATA$log_market_value_in_eur <- log(Football_DATA$market_value_in_eur)
+
+# Drop the original 'market_value_in_eur' column
+Football_DATA <- Football_DATA[, !names(Football_DATA) %in% "market_value_in_eur"]
+
+# Defining the contract_expiration_date as a Data column
+Football_DATA$contract_expiration_date <- as.Date(Football_DATA$contract_expiration_date)
+
+# Extract the year from the contract_expiration_date, and creating a contract_expiration_year column
+Football_DATA <- Football_DATA %>%
+  mutate( 
+    contract_expiration_year = as.numeric(format(contract_expiration_date, "%Y")))
+
+# Calculate the median year, excluding NAs
+median_year <- median(Football_DATA$contract_expiration_year, na.rm = TRUE)
+
+# Fill NA values with the median year
+Football_DATA$contract_expiration_year[is.na(Football_DATA$contract_expiration_year)] <- median_year
+
+# Dropping the contract_expiration_date column 
+Football_DATA <- Football_DATA[, !names(Football_DATA) %in% "contract_expiration_date"]
+
+# Removing NA values
+Football_DATA_C <- na.omit(Football_DATA)
+
+# Create a dummy variable transformation for categorical variables
+dummy_transform <- dummyVars("~ .", data = Football_DATA_C)
+
+# Applying the transformation to generate dummy variables
+Football_DATA_C <- predict(dummy_transform, newdata = Football_DATA_C)
+
+# Converting back to a data frame 
+Football_DATA_C <- as.data.frame(Football_DATA_C)
+
+# removing an unnecessary spaces in within the dummy variables column names
+colnames(Football_DATA_C) <- gsub("'", "", colnames(Football_DATA_C)) 
+colnames(Football_DATA_C) <- gsub(" ", "_", colnames(Football_DATA_C)) 
+
+```
+
+## Feature Selection
+
+In the context of feature selection, its is essential to preprocess the data before the feature selection stage. This is done by scaling the numerical variables and ensuring that the response variable is handled properly. By scaling, this ensures that all the numerical features are on the same scale, preventing certain variables with a larger ranges from dominating the model. This is especially essential with k-nearest neighbors (KNN) and Neural Networks (NN).
+
+In terms of NN, it allows the model to speed by the convergence by ensuring equal contribution from all the variables during the gradient descent, and improves the training efficient and weights optimization process. While in most models, this can also be beneficial in improving the models performance in predictions and accuracy.
+
+The next section involves splitting the dataset into 80% training set and 20% testing set. Typically, the split of a 80/20 is often common, in which the training data is used to train the model, and the remaining testing set is then used to evaluate the model's performance on unseen data, providing an insight into its generalization ability. In order to asses this performance, we would compute the Mean Squared Error (MSE) and compare it across the different models trained.
+
+This is generally done to help determine if the a model is overfitting with very low training and high testing MSE or underfitting with high MSE on both training and testing sets. This evaluation stage helps us determine if the model is too complex, or too simple, and whether adjustments and further tuning of the model is need to better capture the relationship between the predictors and the response variable.
+
+```{r}
+# Select only numerical columns for scaling
+num_columns <- sapply(Football_DATA_C, is.numeric)
+
+# Excluding the log-transformed response variable ('log_market_value_in_eur') from scaling
+num_columns_without_target <- num_columns
+num_columns_without_target[which(names(Football_DATA_C) == "log_market_value_in_eur")] <- FALSE
+
+# Applying Min-Max scaling to the numerical columns (excluding 'log_market_value_in_eur')
+maxs <- apply(Football_DATA_C[, num_columns_without_target], 2, max, na.rm = TRUE)
+mins <- apply(Football_DATA_C[, num_columns_without_target], 2, min, na.rm = TRUE)
+
+# Scaling the numerical columns (excluding the target variable)
+scaled_numeric <- as.data.frame(scale(Football_DATA_C[, num_columns_without_target], center = mins, scale = maxs - mins))
+
+# Adding the non-numerical columns back without scaling
+scaled_data <- cbind(scaled_numeric, Football_DATA_C[, !num_columns])
+
+# Ensuring 'log_market_value_in_eur' is kept in the data
+scaled_data$log_market_value_in_eur <- Football_DATA_C$log_market_value_in_eur
+
+# Move the response variable (column 'log_market_value_in_eur') to the last position
+scaled_data <- scaled_data[, c(setdiff(1:ncol(scaled_data), which(names(scaled_data) == "log_market_value_in_eur")), which(names(scaled_data) == "log_market_value_in_eur"))]
+
+# Confirming the new structure 
+colnames(scaled_data)[ncol(scaled_data)]
+```
+
+```{r}
+# Split the data into training and testing sets
+set.seed(209) # Ensure reproducibility
+
+# indexing and randomly sampling, splitting 80% training and 20% testing set
+train_index <- sample(1:nrow(scaled_data), 0.8 * nrow(scaled_data))
+train_data <- scaled_data[train_index, ]
+test_data <- scaled_data[-train_index, ]
+```
+
+### Step-wise feature selection
+
+We employed Step-wise Regression to try and identify which predictors would be the most useful in both explaining and predicting our log transformed response variable: Market Value in Euros. This initially entails fitting a model with no predictors present. We also defined a "full model" where all predictors in the data set are present. The step wise selection method employed here will perform both forwards and backwards selection. The output of the Step-wise model is included below, and the specific predictors selected by the step wise regression process are outlined.
+
+Subsequently, of the predictors that should be included based on the aforementioned selection methods (step-wise formula), we took it a step further and included some select interaction effects in our "LM Model". The R\^2 of the LM Model with select interactions included rose to 0.6604 from the observed R\^2 value of 0.6554 in our Step-wise model. Further analysis was conducted in which outline values were removed from the training data set (i.e. observations with standardized residuals greater than 3). This amended training set was used to run our second version of the LM Model and resulted in an R\^2 value of 0.7179. We elected to remove the outliers in this specific instance since the QQ plot produced by the original LM Model run on the original test data exhibited non-normality. However, we did not elect to use the outlier free training data for the remainder of this analysis. Furthermore, utilizing the variance inflation factor (VIF) function, we noted some of our selected predictors exhibited high multicollinearity: contract_expiration_year, League_TierChampions_League, CompPremiere_League, Age.
+
+With the exception of the variables selected and model produced by Multivariate Adaptive Regression Splines (MARS) later on in this analysis, all other models discussed with be fitted with the variables found in the original step wise function below. However, the following section dedicated to the linear model will utilize LM Model 1 which includes interaction effects.
+
+```{r}
+# Stepwise model using the scaled data
+initial_model <- lm(log_market_value_in_eur ~ 1, data = train_data)
+full_model <- lm(log_market_value_in_eur ~ ., data = train_data)
+
+# Perform step wise selection (both directions)
+stepwise_model <- stepAIC(initial_model, scope = list(lower = initial_model, upper = full_model), direction = "forward", trace = FALSE)
+stepwise_formula <- formula(stepwise_model)
+
+# Summary and diagnostics of the step wise model
+summary(stepwise_model)
+
+# stepwise selection with interaction effects 
+init_mod <- lm(stepwise_formula, data = train_data)
+
+# include interaction effects (hidden due to high computational time)
+# step(init_mod, scope = .~.^2, direction = "forward")
+
+LM_Model <-  lm(log_market_value_in_eur ~ contract_expiration_year + Min + League_TierChampions_League + 
+                  CompPremier_League + Age + footUnspecified + Goals + 
+                  League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                  SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP + Age:MP + 
+                  contract_expiration_year:has_agent + CompPremier_League:Age + 
+                  height_in_cm:CompSerie_A + Age:PasMedCmp + 
+                  Age:SquadManchester_Utd + contract_expiration_year:Age + 
+                  contract_expiration_year:MP + League_TierChampions_League:MP, 
+                  data = train_data)
+
+# summary output 
+summary(LM_Model)
+
+# diagnostic plots 
+plot(LM_Model)
+
+# extracting the formual from the first model 
+LM_MODEL1 <- formula(LM_Model)
+
+# Compute the standardized residuals
+residuals_standardized <- rstandard(LM_Model)
+
+# Set a threshold for identifying outliers (e.g., standardized residuals > 3 or < -3)
+outlier_threshold <- 3
+outliers <- which(abs(residuals_standardized) > outlier_threshold)
+
+# creating a subset of training data removing the outlier observations
+train_data_clean <- train_data[-outliers, ]
+
+# refitting the model with a cleaned data 
+LM_MODEL2 <- lm(LM_Model, data = train_data_clean)
+
+# summary output 
+summary(LM_MODEL2)
+
+# diagnostic plots 
+plot(LM_MODEL2)
+
+# checking for multicollinearity 
+vif(LM_MODEL2, "predictor")
+```
+
+## Model Selection & Building
+
+#### **Linear Regression**
+
+Our first model in the model building process of this analysis is an extension of the section discussed earlier where we explored different linear models fit with variables found in the step-wise selection process. Using the LM Model outlined in the previous section, we found a training error rate of 0.791 and a test error rate of 0.718.
+
+For curiosities sake, we decided to run the model again on the training data with outliers remove, resulting in LM 2 Model (LM2). Our MSE using LM2 on the training data without outliers included resulted in a train error of 0.6082, additionally running LM2 to predict the test data set resulted in an MSE of 0.6955 which is higher then the train error rate. We noted that both metrics are markedly lower than the original LM Model.
+
+```{r}
+# ------------------------------------------------
+# 1. Fit a Linear Model (LM)
+# ------------------------------------------------
+# Predict using training data with outliers  
+LM_MODEL_train_preds <- predict(LM_Model, train_data)
+# Predict using testing data with outliers  
+LM_MODEL_test_preds <- predict(LM_Model, test_data)
+
+# training error on the LM1 model with outliers  
+LM1_train_error <-  mean((LM_MODEL_train_preds - train_data$log_market_value_in_eur)^2)
+# testing error on the LM1 model with outliers  
+LM1_test_error <-  mean((LM_MODEL_test_preds - test_data$log_market_value_in_eur)^2)
+
+cat("Linear Regression Train MSE: ", LM1_train_error, "\n")
+cat("Linear Regression Train MSE: ", LM1_test_error, "\n") 
+
+# Predict using training data without outliers  
+LM_MODEL2_train_preds <- predict(LM_MODEL2, train_data_clean)
+# Predict using testing data without outliers  
+LM_MODEL2_test_preds <- predict(LM_MODEL2, test_data)
+
+# training error on the LM2 model without outliers  
+LM2_train_error <- mean((LM_MODEL2_train_preds - train_data_clean$log_market_value_in_eur)^2)
+# testing error on the LM2 model without outliers  
+LM2_test_error <- mean((LM_MODEL2_test_preds - test_data$log_market_value_in_eur)^2)
+
+cat("Linear Regression (cleaned data) Train MSE: ", LM2_train_error, "\n")
+cat("Linear Regression (cleaned data) Test MSE: ", LM2_test_error, "\n")
+```
+
+#### **Tree Regression** 
+
+We next decided to fit the data with a regression tree model. These types of models are generally easier to interpret then the linear models we fit previously. A regression tree model was fit with on the training data using the predictors found using the original step wise regression.
+
+A summary of our tree regression model (tree model) is outlined below. The outputted model includes 12 terminal nodes and has a residual mean deviance of 1.295. Furthermore, the MSE on the training data was 1.286 and the MSE on the testing data was 1.3937.
+
+It is generally wise to perform cross validation procedures on regression tree models in a process called "pruning". Specifically, we are trying to determine the optimal level of tree complexity. Doing this, we found a tree with 12 terminal nodes results in the lowest cross validation error rate.
+
+Interestingly, after pruning, we are left with the same exact regression tree model found prior to any cross validation procedures. As such, our MSE on the training and test data was identical after cross validation: 1.286 and 1.3937 on training and test data respectively.
+
+```{r}
+# ------------------------------------------------
+# 2. Fit a Regression Tree
+# ------------------------------------------------
+# Fit the regression tree model
+
+tree_model <- tree(log_market_value_in_eur ~ contract_expiration_year + Min + 
+                  League_TierChampions_League + CompPremier_League + Age + 
+                  footUnspecified + Goals + League_TierRelegation + 
+                  League_TierNot_Qualified + PasLonCmp. + SCA + 
+                  SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data)
+
+# Summary of the fitted tree model
+summary(tree_model)
+
+# Plot the tree structure
+plot(tree_model)
+text(tree_model, pretty = 0)
+
+# Predictions and Errors for Regression Tree
+tree_train_preds <- predict(tree_model, train_data)
+tree_test_preds <- predict(tree_model, test_data)
+
+# computing training and testing error 
+tree_train_error <- mean((tree_train_preds - train_data$log_market_value_in_eur)^2)
+tree_test_error <- mean((tree_test_preds - test_data$log_market_value_in_eur)^2)
+
+cat("Tree Regression Train MSE: ", tree_train_error, "\n")
+cat("Tree Regression Test MSE: ", tree_test_error, "\n")
+
+
+# ------------------------------------------------
+# 3. Pruning the Tree 
+# ------------------------------------------------
+set.seed(209)
+CV1 <- cv.tree(tree_model)
+cv_data <- data.frame(Size = CV1$size, Deviance = CV1$dev)
+
+# Generate the plot
+ggplot(cv_data, aes(x = Size, y = Deviance)) +
+  geom_line(color = "#019") +
+  geom_point(size = 3, color = "#922") +
+  labs(
+    title = "Cross-Validation of Tree",
+    x = "Tree Size (Number of Terminal Nodes)",
+    y = "Deviance"
+  ) +
+  theme_minimal()
+
+
+# Perform cross-validation
+# pruning the tree based on the optimal level of trees, 7-node tree.
+pruned_tree = prune.tree(tree_model, best = 13)
+
+# Summary of the pruned tree
+summary(pruned_tree)
+
+# Predictions on training data
+pruned_train_preds <- predict(pruned_tree, train_data)
+pruned_test_preds <- predict(pruned_tree, test_data)
+
+
+# Predictions on test data
+pruned_train_error <- mean((pruned_train_preds - train_data$log_market_value_in_eur)^2)
+pruned_test_error <- mean((pruned_test_preds - test_data$log_market_value_in_eur)^2)
+
+# print training error 
+cat("Pruned Tree Train MSE: ", pruned_train_error, "\n")
+# print testing error 
+cat("Pruned Tree Test MSE: ", pruned_test_error, "\n")
+
+
+```
+
+#### **Neural Network**
+
+In this section, we explore fitting a neural network using the h2o.deeplearning function (h2o package). Using this package provides a more efficient method training a neural network, especially in handling a large set of predictors, in comparison to using the (neuralnet) package. We begin by initializing the H2O environment and convert our data sets to h2o data frame, as this is the only method of doing so.
+
+The next step involves defining our predictors and response, in this case are we using the predictors that we had extracted from the forward selection step wise function, this narrows down the number of predictors to use. Furthermore to using this package, we are able to further configure beyond just number of hidden layers. In this case, the neural network is configured with three hidden layers, each containing five neurons, a learning rate of 0.0003, and 65 epochs. The activation function used in this case is Rectifier, and defined an automatic loss function, allowing the model to select best loss function based on the data we trained it on.
+
+Furthermore, before training, we performed 10-cross validation to better assess the models performance, to evaluate the model on different subsets of the data. In the plot, we can observe the training record history across different epochs, in which the training MSE decreases in a smooth gradual slope as the number of epochs increases. This reflects on the chosen hyperparameters, tuned to specifically achieve this result, such as the learning rate, number of hidden layers and neurons. Unfortunately, in this package there isn't a function to plot the neural network architecture.
+
+```{r}
+# ------------------------------------------------
+# 4. Fit a Neural Network
+# ------------------------------------------------
+
+# Initialize and Connect to H2O 
+h2o.init()
+
+# Converting training and testing data to an H2O frame
+Train_h2o_data <- as.h2o(train_data)
+Test_h2o_data <- as.h2o(test_data)
+
+
+# Defining our predictors to input into our NN model
+predictors <- c("contract_expiration_year", "Min", "League_TierChampions_League", 
+                "CompPremier_League", "Age", "footUnspecified", "Goals", 
+                "League_TierRelegation", "League_TierNot_Qualified", "PasLonCmp.", 
+                "SCA", "SquadReal_Sociedad", "Fls", "SquadClermont_Foot", 
+                "SquadOsasuna", "X2CrdY", "SoT.", "SquadVillarreal", "SquadNewcastle_Utd", 
+                "SquadLens", "SquadNice", "SquadMonaco", "SquadSevilla", "SquadBochum", 
+                "SquadBournemouth", "TI", "SquadUnion_Berlin", "SquadCádiz", "SquadLazio", 
+                "SquadManchester_Utd", "ToSuc", "height_in_cm", "SquadValencia", "SquadLille", 
+                "SquadLyon","has_agent","SquadStuttgart", "TB", "PasProg", "Pas3rd", "PasMedCmp.", 
+                "CkOut", "SquadBayern_Munich", "ShoPK", "positionGoalkeeper", "TouDefPen", 
+                "BlkSh", "SquadAlmería", "SquadSalernitana", "SquadNottham_Forest", 
+                "TklMid3rd", "TklDriAtt", "TklAtt3rd", "SquadArsenal", "PasTotCmp.", 
+                "PasShoCmp.", "CompSerie_A", "PKcon", "MP")
+
+# defining our response variable 
+response <- "log_market_value_in_eur"
+
+# Defining our model to train with 3 layers of 5 neurons, learning rate = 0.0003, and epochs = 65
+NeuralNet_Model <- h2o.deeplearning(x = predictors, y = response, 
+                                    training_frame = Train_h2o_data,
+                                    hidden = c(5, 5, 5), epochs = 65,
+                                    activation = "Rectifier",
+                                    loss = "Automatic", rate = 0.0003,
+                                    adaptive_rate = FALSE,
+                                    reproducible = TRUE, seed = 209, 
+                                    nfolds = 10, fold_assignment = "AUTO")
+
+# Training Score History plot
+plot(NeuralNet_Model)
+
+# Make predictions on the training and testing data 
+nn_train_preds <- h2o.predict(NeuralNet_Model, Train_h2o_data)
+nn_test_preds <- h2o.predict(NeuralNet_Model, Test_h2o_data)
+
+# Converting to h2o data frames 
+nn_train_preds <- as.data.frame(nn_train_preds)
+nn_test_preds <- as.data.frame(nn_test_preds)
+
+
+# Compute MSE of the training and testing data
+nn_train_error <- mean((nn_train_preds$predict - train_data$log_market_value_in_eur)^2)
+nn_test_error <- mean((nn_test_preds$predict - test_data$log_market_value_in_eur)^2)
+cat("Neural Net Training MSE: ", nn_train_error, "\n")
+cat("Neural Net Testing MSE: ", nn_test_error, "\n")
+
+
+# Plotting predicted vs actual 
+ggplot(data = nn_test_preds, aes(x = predict, y = test_data$log_market_value_in_eur)) +
+  geom_point(color = "black", alpha = 0.7) +
+  labs(title = "Predicted vs Actual In The Testing Data",
+       x = "Predicted Market Value In (EUR)",
+       y = "Actual Market Value In (EUR)") +
+  theme_minimal() +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed")
+dim(train_data)
+nrow(Train_h2o_data)
+
+```
+
+#### Random Forest 
+
+The next objective in model building leads us to fitting a Random Forest model to predict the market value, by using the same selected predictors from the forward step wise selection function. Through the training progress, we fine tune the model in order to avoid underfitting and overfitting.
+
+In this case, we find the best possible optimal tuning parameters, as mtry (53), ntree (100), and nodesize (108), this was decided based on another of tuning made. Initially, when assessing the training and test MSE, it resulted in 0.1658115, and 0.7310265, respectively. This was a concerning case of a model underfitting, which lead us increases the node size to 108, as before it wasn't defined.
+
+When using the importance() function, we found that contract_expiration_year, Min, CompPremier_League yield the highest %IncMSE of 55.34932948, 21.03321502, 27.83448095, indicating to us the importance of these predictors in our model to predict the market value. While IncNodePurity values for contract_expiration_year, Min, League_TierChampions_League, yield the highest at 1354.2403852, 248.5828831, 173.4051049. This provides us significant these predictors are in reducing the node impurity / variance in our model.
+
+After training, we assessed the performance by computing the MSE of both the training and testing set, which as a result 0.7988766, and 0.8334457, respectively.
+
+```{r}
+# ------------------------------------------------
+# 5. Fit a Random Forest
+# ------------------------------------------------
+RF_M11 <- randomForest(log_market_value_in_eur ~ contract_expiration_year + Min + League_TierChampions_League + 
+                  CompPremier_League + Age + footUnspecified + Goals + 
+                  League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                  SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data, 
+                      mtry = 50, 
+                      importance = TRUE,
+                      ntree = 100, nodesize = 108) 
+# Feature Importance
+importance(RF_M11)
+varImpPlot(RF_M11)
+
+
+# Use the best Random Forest model to predict on the training data
+rf_train_preds <- predict(RF_M11, train_data)
+rf_test_preds <- predict(RF_M11, test_data)
+
+# Calculate the training error (mean squared error)
+rf_train_error <- mean((rf_train_preds - train_data$log_market_value_in_eur)^2)
+# Calculate the test error (mean squared error)
+rf_test_error <- mean((rf_test_preds - test_data$log_market_value_in_eur)^2)
+cat("Random Forest Train MSE: ", rf_train_error, "\n")
+cat("Random Forest Test MSE: ", rf_test_error, "\n")
+
+```
+
+#### LASSO & Ridge Regression
+
+Next we elected to construct both a LASSO model and Ridge Regression model to fit our data. These methods involve their own predictor selection as well, so we will not be utilizing the predictors outlined in our step wise selection section. The advantage of lasso over ridge is that lasso will actually force some predictor coefficients to be exactly equal to 0 in practice. This makes LASSO easier to interpret over ridge in some cases as ridge regression will generate a model with all predictors included even if the weights of some are extremely negligible.
+
+We then fit a LASSO model, and after cross validation, we found the optimal lambda value to be 0.02623263 in reducing our MSE, and in this case came out to be 0.8684051 (training) and 0.9331179 (testing). We subsequently went on to fit a ridge regression using the same cross validation technique, with an optimal lambda value of 0.4375866. In this case our training MSE came out to be 0.8190284, and the testing was 0.8831628, this was a marginal difference, indicating a good fit for both models. 
+
+```{r, include=FALSE}
+set.seed(210)
+train_index1 <- sample(1:nrow(scaled_data), 0.8 * nrow(scaled_data))
+train_data1 <- scaled_data[train_index1, ]
+test_data1 <- scaled_data[-train_index1, ]
+```
+
+```{r}
+# ------------------------------------------------
+# 6. Fit a Lasso model 
+# ------------------------------------------------
+x_train <- model.matrix(log_market_value_in_eur ~ ., data = train_data1) # Remove intercept
+y_train <- train_data1$log_market_value_in_eur
+
+x_test <- model.matrix(log_market_value_in_eur ~ ., data = test_data1) # Remove intercept
+y_test <- test_data1$log_market_value_in_eur
+
+# Fit LASSO with cross-validation
+lasso_model <- cv.glmnet(x_train, y_train, alpha = 1, nfolds = 10) # alpha = 1 for LASSO
+plot(lasso_model)
+# Optimal lambda
+optimal_lambda1 <- lasso_model$lambda.min
+print(optimal_lambda1)
+# Predict on training and testing data
+LSO_train_preds <- predict(lasso_model, s = optimal_lambda1, newx = x_train)
+LSO_test_preds <- predict(lasso_model, s = optimal_lambda1, newx = x_test)
+
+# Calculate MSE for train and test
+LSO_train_mse <- mean((LSO_train_preds - y_train)^2)
+LSO_test_mse <- mean((LSO_test_preds - y_test)^2)
+
+cat("Lasso Train MSE: ", LSO_train_mse, "\n")
+cat("Lasso Test MSE: ", LSO_test_mse, "\n")
+
+# ------------------------------------------------
+# 7. Fit a ridge regression 
+# ------------------------------------------------
+# Fit ridge regression
+ridge_model <- glmnet(x_train, y_train, alpha = 0)
+
+
+# Cross-validation to find the best lambda
+cv_ridge <- cv.glmnet(x_train, y_train, alpha = 0)
+best_lambda1 <- cv_ridge$lambda.min
+print(best_lambda1)
+
+# Plot 
+plot(cv_ridge)
+
+# Predict on training data
+RDG_train_preds <- predict(ridge_model, s = best_lambda1, newx = x_train)
+RDG_test_preds <- predict(ridge_model, s = best_lambda1, newx = x_test)
+
+# Predict on test data
+RDG_train_error <- mean((RDG_train_preds - y_train)^2)
+RDG_test_error <- mean((RDG_test_preds - y_test)^2)
+
+cat("Ridge Regression Train MSE: ", RDG_train_error, "\n")
+cat("Ridge Regression Test MSE: ", RDG_test_error, "\n")
+
+
+
+
+
+```
+
+#### Generalized Additive Models (GAM)
+
+In this section, we explored fitting a Generalized Additive Model, in order to capture the non-linear relationships between our predictors and the response variable. In our case initially fitted the the predictors from our step-wise forward selection and used the smoothing terms for each of the numerical predictors.
+
+We verified that through looking at that summary output and gam.check diagnostics that these were the only predictors that required a smooth term; contract_expiration_year, Min, Age, SCA, TB, TouDefPen, TklDriAtt. While certain variable did seem to require a smooth term, however they proved to be more difficult to, and other predictors that were not needed due to their lack of importance in the model, were dropped.
+
+As a result, we verified the model by computing the MSE on the training and testing sets, which in this case came out to be 0.7009415 (train MSE), 0.7835914 (test MSE).
+
+```{r}
+# ------------------------------------------------
+# 8. Fitting a Gam Model 
+# ------------------------------------------------
+gam_model <- gam(log_market_value_in_eur ~ s(contract_expiration_year) + s(Min) +
+                   League_TierChampions_League + CompPremier_League + s(Age) + 
+                   footUnspecified + Goals + League_TierRelegation + 
+                   League_TierNot_Qualified + PasLonCmp. + s(SCA) + SquadReal_Sociedad 
+                  + SquadClermont_Foot + SquadOsasuna + X2CrdY + SquadNewcastle_Utd 
+                 + SquadLens + SquadNice  + SquadBochum + SquadBournemouth  + 
+                   SquadUnion_Berlin + SquadCádiz + SquadLazio + SquadManchester_Utd + 
+                   height_in_cm + SquadLille + SquadLyon + has_agent + s(TB) + PasProg 
+                 + Pas3rd + CkOut + SquadBayern_Munich + positionGoalkeeper + 
+                   s(TouDefPen) + SquadAlmería + s(TklDriAtt) + PasShoCmp. + 
+                   MP, data = train_data)
+
+# output the summary 
+summary(gam_model)
+# diagnostic of the model
+gam.check(gam_model)
+
+# Predictions and Errors for Gam Model
+gam_train_preds <- predict(gam_model, train_data)
+gam_test_preds <- predict(gam_model, test_data)
+
+# computing the MSE on both training and testing set 
+gam_train_error <- mean((gam_train_preds - train_data$log_market_value_in_eur)^2)
+gam_test_error <- mean((gam_test_preds - test_data$log_market_value_in_eur)^2)
+
+cat("GAM Train MSE: ", gam_train_error, "\n")
+cat("GAM Test MSE: ", gam_train_error, "\n")
+
+```
+
+#### Gradient Boosting Machine (GBM)
+
+In the next section, we had explored fitting a GBM (Gradient Boosting Model), by fitting the model with our selected predictors to predict the market value. We evaluated the effect of our defined shrinkage parameter (lambda) to control the learning rate, and determine how the changes impact the model. We defined a sequence of shrinkage values ranging from 10\^-2 to 10\^0.1, and fitted into our model to determine the best optimal shrinkage value.
+
+After looping over the sequence of shrinkage parameters (lambda) values, it is often an added value to visualize how the changes in these values correlate with the changes in the MSE. To achieve this, we first plotted the using training set, as expected we observed a gradual decline in the training set MSE as the shrinkage lambda value increase. However, when observing the testing set, we notice a steady incline as the shrinkage value lambda increased, this tells use that a larger shrinkage value might be leading to overftting our model, which will most likely provide inaccurate predictions due to poor generalization.
+
+Before computing the MSE, we wanted to observe the output of our final model with the optimal shrinkage value (lambda), to determine what how our model valued the importance of the predictors. In this case, the top 5 predictors, in terms of relative importance, were:contract_expiration_year [13.05661592], Min [9.25264829], TklDriAtt. [7.74001819], PasTotCmp. [6.48737908] and ToSuc [5.50363204]
+
+In this case, after plotting the shrinkage values when evaluated on both the training and testing set, we found the best possible value to be 0.06309573 This gave us a training error of 0.7442913, and a testing error of 0.7563976, which is indicating to us that our model is generalizing well, as there only a slight difference of 0.0121063, which is expected.
+
+```{r}
+# ------------------------------------------------
+# 9. Fit a GBM
+# ------------------------------------------------
+# Setting the seed
+set.seed(209)
+
+# Defining the shrinkage values
+Seq <- seq(-2, 0, 0.1)
+Lambdas <- 10^Seq
+
+# Initialize to store train error
+B_Train_Error <- rep(NA, length(Lambdas))
+
+# Loop function to loop over Lambdas on the training set with 1,000 trees
+for (i in 1:length(Lambdas)) {
+  Boosted_ML = gbm(log_market_value_in_eur ~ contract_expiration_year + Min + 
+                     League_TierChampions_League + 
+                     CompPremier_League + Age + footUnspecified + Goals + 
+                     League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                     SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                     SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                     SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                     SquadSevilla + SquadBochum + SquadBournemouth + 
+                     TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                     SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                     SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                     PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                     ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería + 
+                     SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                     TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                     PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data,
+                     distribution = "gaussian", n.trees = 1000, shrinkage = Lambdas[i])
+  
+  # Predict with training data
+  Boosted_ML_Pred = predict(Boosted_ML, train_data, n.trees = 1000)
+  
+  # Computing training error (use log_market_value_in_eur instead of Salary)
+  B_Train_Error[i] = mean((Boosted_ML_Pred - train_data$log_market_value_in_eur)^2)}
+
+
+# Initialize to store test error
+B_Test_Error <- rep(NA, length(Lambdas))
+
+# Loop function to loop over Lambdas on the training set with 1,000 trees
+for (i in 1:length(Lambdas)) {
+  # Fit the model on the training data
+  Boosted_ML = gbm(log_market_value_in_eur ~ contract_expiration_year + Min +
+                     League_TierChampions_League + CompPremier_League + Age + 
+                     footUnspecified + Goals + League_TierRelegation + 
+                     League_TierNot_Qualified + PasLonCmp. + SCA + 
+                     SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                     SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                     SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                     SquadSevilla + SquadBochum + SquadBournemouth + 
+                     TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                     SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                     SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                     PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                     ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                   + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                     TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                     PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data,
+                   distribution = "gaussian", n.trees = 1000, shrinkage = Lambdas[i])
+  
+  # Predict on the test data
+  Boosted_ML_Pred = predict(Boosted_ML, test_data, n.trees = 1000)
+  
+  # Compute test error (MSE)
+  B_Test_Error[i] = mean((Boosted_ML_Pred - test_data$log_market_value_in_eur)^2)}
+
+# Plotting train error against Lambdas
+plot(Lambdas, B_Train_Error, type = "b", xlab = "Shrinkage parameter lambda", ylab = 
+       "Train Set MSE")
+
+# Plotting test error against Lambdas
+plot(Lambdas, B_Test_Error, type = "b", xlab = "Shrinkage parameter lambda", ylab = 
+       "Test Set MSE")
+
+# Finding the optimal shrinkage value (lambda) with the minimum test MSE
+optimal_lambda <- Lambdas[which.min(B_Test_Error)]
+cat("Optimal shrinkage parameter (lambda): ", optimal_lambda, "\n")
+
+# summary output 
+summary(Boosted_ML)
+
+# 'best_lambda optimal value of lambda obtained from the testing loop
+best_lambda <- Lambdas[which.min(B_Test_Error)]
+best_lambda
+
+# Train the final model with the best lambda
+Final_Model <- gbm(log_market_value_in_eur ~ contract_expiration_year + Min + League_TierChampions_League + 
+                  CompPremier_League + Age + footUnspecified + Goals + 
+                  League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                  SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data,
+                   distribution = "gaussian",
+                   n.trees = 1000,
+                   shrinkage = best_lambda)
+
+# Predicting Training and testing 
+gbm_train_preds <- predict(Final_Model, train_data, n.trees = 1000)
+gbm_test_preds <- predict(Final_Model, test_data, n.trees = 1000)
+
+
+# Compute the training and testing error 
+gbm_train_error <- mean((gbm_train_preds - train_data$log_market_value_in_eur)^2)
+gbm_test_error <- mean((gbm_test_preds - test_data$log_market_value_in_eur)^2)
+
+
+# output the training error 
+cat("GBM Train MSE: ", gbm_train_error, "\n")
+
+# output the testing error 
+cat("GBM Train MSE: ", gbm_test_error, "\n")
+
+```
+
+#### **Support Vector Machine (SVM)**
+
+In our next model we wanted to explore and training was a SVM (Support Vector Machine). The model was tuned in order to perform better then the base model, in which the cost, Kernal, and cross where not specified. In which the performance was extremely poor with a training MSE of 0.585998, and testing MSE of 0.8305746, this indicated to use that our trained SVM was overfitting, and poor generalizing new unseen data.
+
+In this case, the parameters that we tuned include the cost parameter (C) which we set at 0.31, and specified the kernel (radial base function). The model was then trained with the same predictors as some of the other models, and evaluated the model by computing the MSE on both the training and testing. As result, we were able to achieve a training error of 0.8529843, and testing error of 0.9325839, this is higher then the initial model. While these error are higher than those of the initial model, they suggest that the tuned SVM is not underfitting and has better generalization than the baseline model
+
+```{r}
+# ------------------------------------------------
+# 10. Fit an SVM
+# ------------------------------------------------
+# Fit SVM model
+# Fit SVM model
+svm_model <- svm(log_market_value_in_eur ~ contract_expiration_year + Min + League_TierChampions_League + 
+                  CompPremier_League + Age + footUnspecified + Goals + 
+                  League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                  SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP, 
+                  data = train_data)
+
+
+# Predicting Training Error
+svm_train_preds1 <- predict(svm_model, train_data)
+svm_test_preds1 <- predict(svm_model, test_data)
+
+
+# Compute  Error
+svm_train_error1 <- mean((svm_train_preds1 - train_data$log_market_value_in_eur)^2)
+svm_test_error1 <- mean((svm_test_preds1 - test_data$log_market_value_in_eur)^2)
+cat("SVM Train MSE: ", svm_train_error1, "\n")
+cat("SVM Test MSE: ", svm_test_error1, "\n")
+
+# Tuning the SVM 
+svm_model_tuned <- svm(log_market_value_in_eur ~ contract_expiration_year + Min + 
+                         CompPremier_League + Age + footUnspecified + Goals + 
+                         League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                         SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot +
+                         SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                         SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                         SquadSevilla + SquadBochum + SquadBournemouth + 
+                         TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                         SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                         SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                         PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                         ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                       + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                         TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                         PasShoCmp.  + CompSerie_A + PKcon + MP, 
+                       data = train_data,kernel = "radial", cost = 0.31)
+
+# Predicting Training Error
+svm_train_preds <- predict(svm_model_tuned, train_data)
+svm_test_preds <- predict(svm_model_tuned, test_data)
+
+# Compute Error 
+svm_train_error <- mean((svm_train_preds - train_data$log_market_value_in_eur)^2)
+svm_test_error <- mean((svm_test_preds - test_data$log_market_value_in_eur)^2)
+
+# output the training error of the tuned model 
+cat("SVM Tuned Train MSE: ", svm_train_error, "\n")
+# output the testing error of the tuned model 
+cat("SVM Tuned Test MSE: ", svm_test_error, "\n")
+
+
+```
+
+#### K-Nearest Neighbors (KNN) 
+
+In this section we elected to create and fit a K-Nearest Neighbors (KNN) model to the data. First a k-fold cross validation was fit to the training data with a k-value of 10. Thus our 10-fold cross validation will be the average of the 10 MSE's computed using the 10 folds. Training the model with this cross-validation technique, we found the optimal number for k to use was k = 7. The training and test MSE found using this method was 1.11 for the training MSE and 1.19 for the testing MSE.
+
+```{r}
+# ------------------------------------------------
+# 11. Fit an KNN
+# ------------------------------------------------
+
+# Train control for cross-validation
+train_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+# Train the KNN model with cross-validation
+knn_cv_model <- train(
+  log_market_value_in_eur ~ contract_expiration_year + Min + League_TierChampions_League + 
+                  CompPremier_League + Age + footUnspecified + Goals + 
+                  League_TierRelegation + League_TierNot_Qualified + PasLonCmp. + 
+                  SCA + SquadReal_Sociedad + Fls + SquadClermont_Foot + 
+                  SquadOsasuna + X2CrdY + SoT. + SquadVillarreal + 
+                  SquadNewcastle_Utd + SquadLens + SquadNice + SquadMonaco + 
+                  SquadSevilla + SquadBochum + SquadBournemouth + 
+                  TI + SquadUnion_Berlin + SquadCádiz + SquadLazio + 
+                  SquadManchester_Utd  + ToSuc + height_in_cm + SquadValencia + 
+                  SquadLille + SquadLyon + has_agent + SquadStuttgart + TB + 
+                  PasProg + Pas3rd  + PasMedCmp. + CkOut + SquadBayern_Munich + 
+                  ShoPK  + positionGoalkeeper + TouDefPen + BlkSh + SquadAlmería 
+                  + SquadSalernitana  + SquadNottham_Forest + TklMid3rd + 
+                  TklDriAtt + TklAtt3rd + SquadArsenal + PasTotCmp. + 
+                  PasShoCmp.  + CompSerie_A + PKcon + MP, data = train_data, method = "knn", 
+                  trControl = train_control, tuneLength = 13)
+
+# Output the best k value from cross-validation
+best_k <- knn_cv_model$bestTune$k
+print(paste("Best K value from cross-validation:", best_k))
+
+# Predicting Training Error
+knn_train_preds <- predict(knn_cv_model, train_data)
+knn_test_preds <- predict(knn_cv_model, test_data)
+
+# Compute  Error
+knn_train_error <- mean((knn_train_preds - train_data$log_market_value_in_eur)^2)
+knn_test_error <- mean((knn_test_preds - test_data$log_market_value_in_eur)^2)
+
+# output the training error of the tuned model 
+cat("KNN Train MSE: ", knn_train_error, "\n")
+# output the training error of the tuned model 
+cat("KNN Test MSE: ", knn_test_error, "\n")
+
+```
+
+#### Multivariate Adaptive Regression Splines (MARS)
+
+Below is a model we fit using Multivariate Adaptive Regression Splines. The original model took quite of bit of time to generate. We can see from the original summary of the first model fit (Mars Model) that it achieved an R\^2 of 0.69 on the training data. Additionally a plot of the MarsModel is included. We can see that 63 of 88 terms were used from the 47 of the 239 in our model. Our procedure dummy codes all categorical predictors. The vertical dashed line from the plot tells us the optimal number of non-intercept terms retained when the marginal increase in an additional predictor to GCV R\^2 is less than 0.001. This occurs at 63 terms. Cross validation of the model is necessary. This process involves deciding what order of interaction effects to include and the number of terms to retain in the model. In our cross validation procedures we found that the ideal number of parameters was 23 and to only fit a degree of 1. Below a plot of our generalized cross validation procedures outlines the models most important predictors. Running the cross validated final MARS model (MarsModelFinal), we achieved a training MSE of 0.842 and a test MSE of 0.832.
+
+```{r}
+# ----------------------------------------------------------
+# 12. Multivariate Adapative Regression Splines (MARS) Model
+# ----------------------------------------------------------
+MarsModel <- earth(log_market_value_in_eur~., data = train_data)
+
+print(MarsModel)
+
+plot(MarsModel, which = 1)
+
+#We can see that 63 of 88 terms were used from the 47 of the 239 in our model. Our procedure dummy codes all categorical predictors. The vertical dashed line from the plot tells us the optimal number of non-intercept terms retained when the marginal increase in an additonal predictior to GCV R^2 is less than 0.001. This occurs at 63 terms. 
+
+#Tuning (Cross Validation) of the MARS Model:
+
+hyper_grid <- expand.grid(
+  degree = 1:3,
+  nprune = seq(2,100, length.out = 10) %>% floor()
+)
+
+set.seed(1)
+
+tuner <- train(
+  x = subset(train_data, select = -log_market_value_in_eur),
+  y = train_data$log_market_value_in_eur,
+  method = "earth",
+  metric = "RMSE",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+tuner$bestTune
+
+#Our idea paramters are: nprune = 23, and degree = 1
+
+ggplot(tuner)
+
+p1 <- vip(tuner, num_features = 40, bar = FALSE, value = "gcv") + ggtitle("GCV")
+p2 <- vip(tuner, num_features = 40, bar = FALSE, value = "rss") + ggtitle("RSS")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+#Final Model
+
+MarsModelFinal <- earth(log_market_value_in_eur~., data = train_data, degree = 1, nprune = 23)
+
+summary(MarsModelFinal)
+
+predictionMars_train = predict(MarsModelFinal, train_data)
+
+predictionMars_test = predict(MarsModelFinal, test_data)
+
+(mean((train_data$log_market_value_in_eur - predictionMars_train)^2))
+(mean((test_data$log_market_value_in_eur - predictionMars_test)^2))
+
+Mars_train_error <- mean((predictionMars_train - train_data$log_market_value_in_eur)^2)
+Mars_test_error <- mean((predictionMars_test - test_data$log_market_value_in_eur)^2)
+
+cat("MARS Model Train MSE: ", Mars_train_error, "\n")
+cat("MARS Model Test MSE: ", Mars_test_error, "\n")
+
+
+```
+
+## Model Comparisons
+
+```{r}
+# ------------------------------------------------
+# Combine Results in a Table
+# ------------------------------------------------
+results <- data.frame(
+  Model = c("Linear Model","Linear Model (removed outliers)","Regression Tree","Pruned Tree","Neural Network", 
+            "Random Forest","Lasso Regression","Ridge Regression","Gam Model",
+            "Gradient Boosting (GBM)", "Support Vector Machine (SVM)","K-Nearest Neighbors","(MARS) Model"),
+  Train_Error = c(LM1_train_error, LM2_train_error ,tree_train_error, pruned_train_error, 
+                  nn_train_error,rf_train_error,LSO_train_mse, RDG_train_error,
+                  gam_train_error,gbm_train_error,svm_train_error,knn_train_error,Mars_train_error),
+  Test_Error = c(LM1_test_error, LM2_test_error ,tree_test_error, pruned_test_error, nn_test_error, 
+                 rf_test_error,LSO_test_mse, RDG_test_error,
+                 gam_test_error,gbm_test_error, svm_test_error, knn_test_error,Mars_test_error))
+
+print(results)
+results_long <- tidyr::pivot_longer(results, cols = c("Train_Error", "Test_Error"), 
+                                    names_to = "Error_Type", values_to = "Error_Value")
+
+# Plot the comparison of Train vs Test errors
+ggplot(results_long, aes(x = Model, y = Error_Value, fill = Error_Type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+  labs(title = "Comparison of Training and Testing Errors for Models", 
+       x = "Model", 
+       y = "Error Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("skyblue", "orange"))
+
+
+```
+
+## Results and Findings
+
+Based on the comparison table of our models, the performance was evaluated in terms of Mean Squared Error (MSE) on both the training and testing data sets. Thus ultimately allowing us to pin point specific models that are capable in accurately predicting the market value of a football player. As a result, our top five performing models based on the MSE comparison;
+
+1.  Linear Model (removed outliers): This essentially captures how well our our model is capable to standout in terms of performance after isolating the outliers that were observed during the diagnostic stage, as this is the only model that has the lowest training and testing error. This result highlights the critical role of pre-processing and diagnostics in enhancing a model's performance, by addressing outliers, and ensuring that all the assumptions of linear regression are kept true.
+
+2.  Gam Model: The Generalized Additive Model (GAM) demonstrated a significantly better performance in comparison to our initial linear regression model that contained outliers. As the training and testing (MSE) indicates to us that is capable of capturing the underlying non-linear relationships between the defined predictors and the response variable. The improvement highlights the GAM's capabilities in modeling a complex non-linear trends that a traditional linear model might not be able to pick up on.
+
+3.  Gradient Boosting (GBM): When a training a GMB, the model performed well, in achieving a training MSE of 0.7443 and a test MSE of 0.7564, a marginal difference of 0.0121, indicating a strong balance between variance and bias. This performance highlights the capabilities of a GBM ability to be reliable as predictive model, as the bias-variance trade off is effective in our case. This tells us that a GBM may be a strong candidate as the optimal choice in capturing the complex patterns within our data without sacrificing computational cost and interpretability.
+
+4.  Neural Network (NN): In terms of marginal differences, this model was able to exhibit a notable balance, as a result achieving a training MSE of 0.8036039, and a testing MSE of 0.8223758. The marginal difference of 0.0187719, highlighting the model's ability to generalize well to unseen data without overfitting, which is often a challenge we had faced when tuning and training our model, as the complexity for learning the underlying patterns is often challenging in terms of computational costs and time. Furthermore, it is worth noting, that this model utilized only a subset of our predictors. As the added option of using a step-wise selection function, we were able to reduce the number of predictors, make the model more manageable and computationally efficient, thus this approach was necessary to accommodate the limitations of our current computational resources. If we had access to greater computational power, we could expand the network to include additional predictors and a more complex architecture, this added benefit could potentially enable the neural network to outperform other models in this project.
+
+5.  Random Forest: The Random Forest model (RF) was able to achieve a training MSE of 0.8006667, and testing MSE of 0.8382549, this is again are marginal difference of 0.0375882. This would indicate to us that the model generalizing well to new unseen data, without overfitting on the training data. The relatively consistent performance highlights the effectiveness of the tune parameters, such as mtry, ntree and nodesize, which significantly impacted the overall performance. By fine-tuning these parameters, we were able to ensure that the model strikes a good balance between bias and variance. In comparison to the other models, the Random Forest (RF) performed quite well, by capturing complex relationships between the variables, while it didn't outperform the four models listed above, it still remains an optimal choice in handling a complex dataset.
+
+## Conclusion
+
+In our project, we aimed to predict the market value of football/soccer players based on a wide variety of predictors, such player-performance metrics, team affiliation, contract length details, player demographic details and other variables. Throughout this process, we had carefully managed and processed the data, ensuring its quality through appropriate data cleaning and feature engineering, all of which we determined was essential in enhancing the predictive power of our models.
+
+By doing, we were able to avoid potential issues that could arise when fitting our models, particularly with complex models like neural networks. As neural networks often require the variables to be scaled, and they typically do not handle categorical variables well. By transforming categorical variables into dummy variables, we were able to include them in our models without losing valuable information. This allowed us to maintain a comprehensive set of predictors while ensuring the data was set up in suitable format for such models.
+
+While in this project, we explored and trained a wide variety of models, in which most demonstrated varying levels of performance such as Linear Regression, Generalized Additive Model (GAM), Gradient Boosting (GBM), Neural Network (NN), and Random Forest. These model often struggled when handling of the data was not properly handled. This included issues with improper feature engineering, lack of scaling, and inadequate treatment of categorical variables hindered their performance. These factors significantly motivated the need for proper handling of the data processing, which in our case significantly improved the accuracy and reliability, allowing the models to perform optimally.
+
+#### Unexplained Variability
+
+Despite the careful data processing and fine model tuning, there remains some unexplained variability in our predictions. One significant factor contributing to this is the tendency of certain clubs within these leagues to pay disproportionately high sums of money for players, often driven by factor beyond on-field performance metrics. As in most cases, some players are positioned significantly high in terms of their value in the football/soccer transfer market. As some are not just the reflection of a player's talent but also as a result of the football club's strategic investment, often linked to the potential for future value appreciation or the media-driven hyper around certain players.
+
+For instance, a clubs may value a player due to anticipated marketability, brand value or the belief that the player's future performance could exceed expectations, even if their current performance metrics do not entirely justify the high value. Furthermore, media attention and fan perception often play a pivotal role in shaping these decisions, further contributing to the unpredictability of certain players value in the football transfer market. This highlights that player value is not solely determined by on-field performance but is also influenced by intangible elements such as marketability, fan engagement and media narratives.
+
+By acknowledging these factors, we can recognize the limitations of predictive models in fully capturing the complexities of a player value in the market. Ultimately, our findings emphasize the interplay between performance metrics and league specific dynamics, such as varying levels of competition, and purchasing powers of certain teams. To counter these challenges, future work would require the incorporation of alternative data sources, such as sentiment analysis, player social media metrics, and club specific purchasing power, to better capture these influences. Recognizing these limitations not only refines the interpretation of our model outputs but also underscores the need for a deeper approach when analyzing the intricate economics of the football/soccer transfer market.
