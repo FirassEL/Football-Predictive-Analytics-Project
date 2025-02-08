@@ -1,10 +1,10 @@
-Football Player Market Value Prediction
+# Football Player Market Value Prediction
 
-Project Overview
+## Project Overview
 
 This project aims to build a predictive model that estimates the market value of football players. By leveraging machine learning techniques, the model analyzes various player attributes and historical data to provide accurate market value estimations. The insights gained from this project can assist clubs, agents, and analysts in making informed transfer decisions.
 
-Data Sources
+## Data Sources
 
 The dataset includes key attributes of football players, such as:
 
@@ -18,7 +18,7 @@ Club and League Factors: Team reputation, league competitiveness, and recent tra
 
 Market Factors: Historical transfer fees, demand trends, and contract duration
 
-Methodology
+## Methodology
 
 The project follows a structured approach:
 
@@ -30,31 +30,34 @@ Feature Engineering: Creating meaningful features to improve prediction accuracy
 
 Model Selection & Training: Evaluating various machine learning models, including:
 
-Linear Regression
+- Linear Regression
 
-Decision Trees
+- Decision Trees
 
-Random Forest
+- Random Forest
 
-Gradient Boosting Models (XGBoost, LightGBM)
+- Gradient Boosting Models (XGBoost, LightGBM)
+
+- Neural Network
+
+- Lasso and Ridge Regression
 
 Model Evaluation: Using metrics such as Mean Absolute Error (MAE) and R-squared (R²) to assess performance.
 
 Optimization & Fine-tuning: Hyperparameter tuning to enhance model efficiency.
 
-Tools & Technologies
+## Tools & Technologies
 
-Programming Language: Python
+Programming Language: RStudio
 
-Libraries Used: Pandas, NumPy, Scikit-learn, Matplotlib, Seaborn, XGBoost, LightGBM
+Libraries Used: tidyverse, caret, randomForest, xgboost, h2o, etc
 
-Data Visualization: Matplotlib & Seaborn for graphical insights
+Data Visualization: ggplot for graphical insights
 
-Model Deployment: Streamlit or Flask (optional, if applicable)
 
 Results & Insights
 
-The model successfully predicts market values with a reasonable error margin.
+The model successfully predicts market values with a reasonable error margin, and comparing with other models by checking R^2 and MSE
 
 Feature importance analysis highlights key factors influencing a player's market value.
 
