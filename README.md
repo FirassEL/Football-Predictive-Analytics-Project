@@ -55,7 +55,7 @@ Libraries Used: tidyverse, caret, randomForest, xgboost, h2o, etc
 Data Visualization: ggplot for graphical insights
 
 
-Results & Insights
+## Results & Insights
 
 The model successfully predicts market values with a reasonable error margin, and comparing with other models by checking R^2 and MSE
 
